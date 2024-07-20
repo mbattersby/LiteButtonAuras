@@ -24,6 +24,8 @@ local LibBG = LibStub("LibButtonGlow-1.0")
 -- it's a pain to maintain.
 
 local DebuffTypeColor = DebuffTypeColor
+local GetActionText = GetActionText
+local GetMacroBody = GetMacroBody
 local GetMacroItem = GetMacroItem
 local GetMacroSpell = GetMacroSpell
 local GetTime = GetTime
@@ -55,6 +57,24 @@ function LBA.UpdateAuraMap()
             end
         end
     end
+end
+
+
+--[[------------------------------------------------------------------------]]--
+
+-- I tried caching the gmatch split but it wasn't any faster.
+
+local function GetMacroUnit(macroIdentifier)
+    local macroBody = GetMacroBody(macroIdentifier)
+    if macroBody then
+        for _, conditionsAndArgs in gmatch(macroBody, "/(%w+)%s+([^\n]+)") do
+            local result, unit = SecureCmdOptionParse(conditionsAndArgs)
+            if result then
+                return unit or 'target'
+            end
+        end
+    end
+    return 'target'
 end
 
 
@@ -93,6 +113,47 @@ function LiteButtonAurasOverlayMixin:Style()
     self.Stacks:SetJustifyH(justifyH)
 end
 
+-- From: https://warcraft.wiki.gg/wiki/UnitId
+-- Not all units make sense to care about, nobody is going to write [@raid23]
+-- The soft targeting isn't really valid either, all of the cases I think we
+-- care about are just covered by @target.
+
+local ValidTrackedUnits = {
+    "arena1", "arena2", "arena3", "arena4", "arena5",
+    "boss1", "boss2", "boss3", "boss4", "boss5", "boss6", "boss7", "boss8",
+    "focus",
+    "mouseover",
+    "party1", "party2", "party3", "party4",
+}
+
+-- Assumes player, pet and target are already watched.  This is slow don't call
+-- this very often.
+
+function LiteButtonAurasOverlayMixin:GetTrackedUnits()
+    local type = self:GetActionInfo()
+    local trackedUnits = {}
+    if type == 'macro' then
+        local macroName = GetActionText(self:GetActionID())
+        local macroBody = GetMacroBody(macroName)
+        if macroBody then
+            for conditionExpr in macroBody:gmatch('%[(.-)%]') do
+                for condition in conditionExpr:gmatch('[^,]+') do
+                    local unit
+                    if condition:sub(1,1) == '@' then
+                       unit = condition:sub(2)
+                    elseif condition:sub(1,7) == 'target=' then
+                        unit = condition:sub(8)
+                    end
+                    if unit and tContains(ValidTrackedUnits, unit) then
+                        trackedUnits[unit] = true
+                    end
+               end
+            end
+        end
+    end
+    return trackedUnits
+end
+
 -- This could be optimized (?) slightly be checking if type, id, subType
 -- are all the same as before and doing nothing
 --
@@ -112,6 +173,8 @@ function LiteButtonAurasOverlayMixin:SetUpAction()
 
     local type, id, subType = self:GetActionInfo()
 
+    self.unit = 'target'
+
     if type == 'spell' then
         self.name = C_Spell.GetSpellName(id)
         self.spellID = id
@@ -124,25 +187,20 @@ function LiteButtonAurasOverlayMixin:SetUpAction()
     end
 
     if type == 'macro' then
+        local macroName = GetActionText(self:GetActionID())
+        self.unit = GetMacroUnit(macroName)
         if subType == 'spell' then
             self.spellID = id
-            self.name = C_Spell.GetSpellName(self.spellID)
+            self.name = C_Spell.GetSpellName(id)
             return
         elseif subType == 'item' then
             -- 10.2 GetActionInfo() seems bugged for this case. In an ideal
             -- world id would be the itemID but it seemds to be actionID-1.
             -- This workaround assumes no two macros have the same name. Maybe
             -- there's a better way.
-            local actionID = self:GetActionID()
-            if actionID then
-                local macroName = GetActionText(actionID)
-                local macroID = GetMacroIndexByName(macroName or "")
-                if macroID then
-                    local _, itemLink = GetMacroItem(macroID)
-                    if itemLink then
-                        self.name, self.spellID = C_Item.GetItemSpell(itemLink)
-                    end
-                end
+            local _, itemLink = GetMacroItem(macroName)
+            if itemLink then
+                self.name, self.spellID = C_Item.GetItemSpell(itemLink)
             end
             return
         elseif not subType then
@@ -209,24 +267,24 @@ function LiteButtonAurasOverlayMixin:Update(stateOnly)
             self:SetUpAction()
         end
 
-        if self.name then
-            if self:TrySetAsSoothe() then
+        if self.name and LBA.state[self.unit] then
+            if self:TrySetAsSoothe(self.unit) then
                 show = true
-            elseif self:TrySetAsInterrupt() then
+            elseif self:TrySetAsInterrupt(self.unit) then
                 show = true
             elseif self:TrySetAsTotem() then
                 show = true
-            -- elseif self:TrySetAsTaunt('target') then
+            -- elseif self:TrySetAsTaunt(self.unit) then
             --     show = true
             elseif self:TrySetAsBuff('player') then
                 show = true
             elseif LBA.PlayerPetBuffs[self.name] and self:TrySetAsBuff('pet') then
                 show = true
-            elseif self:TrySetAsDebuff('target') then
+            elseif self:TrySetAsDebuff(self.unit) then
                 show = true
             elseif self:TrySetAsWeaponEnchant() then
                 show = true
-            elseif self:TrySetAsDispel() then
+            elseif self:TrySetAsDispel(self.unit) then
                 show = true
             end
         end
@@ -347,10 +405,10 @@ function LiteButtonAurasOverlayMixin:ReadyBefore(endTime)
     end
 end
 
-function LiteButtonAurasOverlayMixin:TrySetAsInterrupt()
-    if LBA.state.target.interrupt then
+function LiteButtonAurasOverlayMixin:TrySetAsInterrupt(unit)
+    if LBA.state[unit].interrupt then
         if self.name and LBA.Interrupts[self.name] then
-            local castEnds = LBA.state.target.interrupt
+            local castEnds = LBA.state[unit].interrupt
             if self:ReadyBefore(castEnds) then
                 self.expireTime = castEnds
                 self.displaySuggestion = true
@@ -371,11 +429,11 @@ function LiteButtonAurasOverlayMixin:SetAsSoothe(auraData)
 end
 ]]
 
-function LiteButtonAurasOverlayMixin:TrySetAsSoothe()
+function LiteButtonAurasOverlayMixin:TrySetAsSoothe(unit)
     if not self.name or not LBA.Soothes[self.name] then return end
-    if UnitIsFriend('player', 'target') then return end
+    if UnitIsFriend('player', self.unit) then return end
 
-    for _, auraData in pairs(LBA.state.target.buffs) do
+    for _, auraData in pairs(LBA.state[unit].buffs) do
         if auraData.isStealable and auraData.dispelName == "" and self:ReadyBefore(auraData.expirationTime) then
             self.expireTime = auraData.expirationTime
             self.displaySuggestion = true
@@ -394,7 +452,7 @@ function LiteButtonAurasOverlayMixin:TrySetAsTaunt(unit)
     if not self.name or not LBA.Taunts[self.name] then return end
     if UnitIsFriend('player', unit) then return end
 
-    for _, auraData in pairs(LBA.state.target.debuffs) do
+    for _, auraData in pairs(LBA.state[unit].debuffs) do
         if LBA.Taunts[auraData.name] then
             if auraData.sourceUnit == 'player' then
                 self:SetAsBuff(auraData)
@@ -417,19 +475,19 @@ function LiteButtonAurasOverlayMixin:SetAsDispel(auraData)
     self:SetAsAura(auraData)
 end
 
-function LiteButtonAurasOverlayMixin:TrySetAsDispel()
+function LiteButtonAurasOverlayMixin:TrySetAsDispel(unit)
     if not self.name then
         return
     end
 
-    if UnitIsFriend('player', 'target') then
+    if UnitIsFriend('player', self.unit) then
         return
     end
 
     local dispels = LBA.HostileDispels[self.name]
     if dispels then
         for dispelName in pairs(dispels) do
-            for _, auraData in pairs(LBA.state.target.buffs) do
+            for _, auraData in pairs(LBA.state[unit].buffs) do
                 if auraData.dispelName == dispelName then
                     self:SetAsDispel(auraData)
                     self.displaySuggestion = true
