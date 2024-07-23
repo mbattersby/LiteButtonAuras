@@ -147,12 +147,12 @@ function LiteButtonAurasControllerMixin:DumpAllOverlays()
     end
 end
 
-function LiteButtonAurasControllerMixin:UpdateTrackedUnits()
-    self.trackedUnits = CopyTable(AlwaysTrackedUnits)
+function LiteButtonAurasControllerMixin:UpdateTrackedUnitList()
+    self.trackedUnitList = CopyTable(AlwaysTrackedUnits)
     for _, overlay in pairs(self.overlayFrames) do
-        Mixin(self.trackedUnits, overlay:GetTrackedUnits())
+        Mixin(self.trackedUnitList, overlay:GetTrackedUnits())
     end
-    for unit in pairs(self.trackedUnits) do
+    for unit in pairs(self.trackedUnitList) do
         LBA.state[unit] = LBA.state[unit] or { buffs = {}, debuffs = {} }
     end
 end
@@ -338,7 +338,7 @@ function LiteButtonAurasControllerMixin:OnUpdate()
 end
 
 function LiteButtonAurasControllerMixin:IsTrackedUnit(unit)
-    return self.trackedUnits[unit] == true
+    return self.trackedUnitList[unit] == true
 end
 
 function LiteButtonAurasControllerMixin:OnEvent(event, ...)
@@ -348,7 +348,7 @@ function LiteButtonAurasControllerMixin:OnEvent(event, ...)
         self:MarkOverlaysDirty()
         return
     elseif event == 'PLAYER_ENTERING_WORLD' then
-        self:UpdateTrackedUnits()
+        self:UpdateTrackedUnitList()
         UpdateUnitAuras('target')
         UpdateUnitInterrupt('target')
         UpdateWeaponEnchants()
@@ -429,8 +429,8 @@ function LiteButtonAurasControllerMixin:OnEvent(event, ...)
             self:MarkOverlaysDirty(true)
         end
     elseif event == 'ACTIONBAR_SLOT_CHANGED' or event == 'UPDATE_MACROS' then
-        self:UpdateTrackedUnits()
-        for unit in pairs(self.trackedUnits) do
+        self:UpdateTrackedUnitList()
+        for unit in pairs(self.trackedUnitList) do
             UpdateUnitAuras(unit)
             UpdateUnitInterrupt(unit)
         end
